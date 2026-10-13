@@ -1,0 +1,89 @@
+{
+  "manifestVersion": 1,
+  "id": "shure-ad600",
+  "name": "Shure AD600",
+  "version": "0.1.0",
+  "license": "BUSL-1.1",
+  "platforms": [
+    "darwin-arm64",
+    "darwin-x64"
+  ],
+  "repository": "https://github.com/soundbase-lab/shure-ad600-plugin",
+  "maintainers": [
+    {
+      "name": "SoundBase Lab",
+      "url": "https://github.com/soundbase-lab"
+    }
+  ],
+  "contract": {
+    "core": "1.4",
+    "modules": {
+      "SpectrumAnalyzer": "1.2"
+    }
+  },
+  "runtime": {
+    "type": "node",
+    "entrypoint": "main.js"
+  },
+  "deployment": [
+    "managed"
+  ],
+  "template": {
+    "name": "soundbase-plugin-template",
+    "version": "1.0.15"
+  },
+  "products": [
+    {
+      "deviceTypeId": "plugin:shure-ad600/ad600",
+      "manufacturer": {
+        "id": "shure",
+        "name": "Shure"
+      },
+      "model": {
+        "id": "ad600",
+        "name": "AD600",
+        "displayName": "Shure AD600"
+      },
+      "family": {
+        "id": "axient-digital",
+        "name": "Axient Digital"
+      },
+      "capabilities": {
+        "spectrumAnalyzer": true
+      },
+      "traits": {
+        "isSpectrumAnalyzer": true
+      }
+    }
+  ],
+  "pluginConfigFields": [
+    {
+      "id": "pythonPath",
+      "type": "textinput",
+      "label": "Python 3 path",
+      "help": "The scan engine runs under Python 3.8 or newer. Leave this empty to use the one found on this computer; set it to the full path of a `python3` to use that one instead."
+    },
+    {
+      "id": "enginePath",
+      "type": "textinput",
+      "label": "Scan engine override",
+      "help": "Leave this empty to use the engine that ships with the plugin. Set it to the full path of a compiled `ad600_engine_bin` to run that instead, which needs no Python."
+    }
+  ],
+  "deviceConfigFields": [
+    {
+      "id": "host",
+      "type": "textinput",
+      "label": "IP address",
+      "required": true,
+      "help": "The AD600's address. It has to be on the same network (subnet) as this computer: the scan does not cross a router."
+    },
+    {
+      "id": "cid",
+      "type": "textinput",
+      "label": "Component ID",
+      "help": "Normally left empty: the AD600 announces its own. Fill it in only if this AD600 is never found by itself, with the 32 hexadecimal digits of its ACN component ID."
+    }
+  ],
+  "stateKeys": []
+}
