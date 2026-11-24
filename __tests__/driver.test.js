@@ -767,10 +767,6 @@ test('a burst of retunes costs the device one new session, on the last of them',
 // pointed at a loopback socket, it must send that socket an ACN session join
 // carrying the identities it was given, and leave cleanly when told to.
 test('the bundled Python engine boots, joins the address it is given, and quits cleanly', async (t) => {
-  if (process.platform === 'win32') {
-    t.skip('NOT RUN: the bundled engine has not been run on Windows');
-    return;
-  }
   let engine;
   try {
     engine = await resolveEngine({}, { PATH: process.env.PATH });
@@ -808,6 +804,12 @@ test('the bundled Python engine boots, joins the address it is given, and quits 
     'ASC-E1.17',
     'an ACN root-layer packet'
   );
+  // The engine prints its scan set-up about 0.1 s after the join, so the
+  // datagram can arrive before those lines do (seen on Windows): wait for them.
+  await until(() => /LOCKSTEP LOADED \d+ wrappers/.test(run.recentOutput()), {
+    timeoutMs: 15_000,
+    what: `the engine's scan set-up lines (its output:\n${run.recentOutput()})`,
+  });
   const output = run.recentOutput();
   const ours = /our CID=([0-9a-f]{32})/.exec(output)?.[1];
   assert.ok(ours, `the engine did not say who it is:\n${output}`);

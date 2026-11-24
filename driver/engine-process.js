@@ -17,6 +17,12 @@
 // line in the command file, which makes the engine release the slot and leave)
 // and only then escalates through SIGINT and SIGTERM to SIGKILL.
 //
+// On Windows there are no signals to escalate through: Node's kill() there is
+// TerminateProcess, which gives the engine no chance to leave. So on Windows
+// the second request is closing the engine's stdin — the launcher
+// (engine/run_console.py) turns that into the same clean exit — and only the
+// last resort kills.
+//
 // driver/protocol.md describes the contract with the engine in full.
 
 import { execFile, spawn } from 'node:child_process';
@@ -25,6 +31,7 @@ import {
   appendFileSync,
   existsSync,
   mkdtempSync,
+  readdirSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
@@ -45,7 +52,11 @@ const BASE_SOURCE_PORT = 64198;
 // cleanly and the scanner starts another; see README.md, "Known behaviour".
 const DEFAULT_SESSION_SECS = 3600;
 
+const IS_WINDOWS = process.platform === 'win32';
+
 const QUIT_GRACE_MS = 3_000;
+// Windows only: after the stdin pipe closes, the launcher's clean exit
+const STDIN_CLOSE_GRACE_MS = 3_000;
 const SIGINT_GRACE_MS = 2_000;
 const SIGTERM_GRACE_MS = 1_000;
 const KEPT_LINES = 30;
@@ -85,22 +96,66 @@ export class EngineUnavailableError extends Error {}
 
 const run = (command, args) =>
   new Promise((resolve) => {
-    execFile(command, args, { timeout: 5_000 }, (err, stdout) =>
-      resolve(err ? null : String(stdout).trim())
+    execFile(
+      command,
+      args,
+      // windowsHide: no console window flashing up for each probe
+      { timeout: 5_000, windowsHide: true },
+      (err, stdout) => resolve(err ? null : String(stdout).trim())
     );
   });
 
-async function isPython3(command) {
-  const version = await run(command, [
+/**
+ * The Python 3.8+ that `command` runs, as the path of its interpreter, or
+ * null when it is not one. The path matters on Windows: `py` and the
+ * Microsoft Store's `python` are launchers that start the real interpreter as
+ * a child of their own, and a launcher in between would stand between this
+ * plugin and the engine when it has to be stopped.
+ */
+async function probePython(command) {
+  const answer = await run(command, [
     '-c',
-    'import sys; print("%d.%d" % sys.version_info[:2])',
+    'import sys; print("%d.%d" % sys.version_info[:2]); print(sys.executable)',
   ]);
-  const [major, minor] = (version ?? '').split('.').map(Number);
-  return major === 3 && minor >= 8;
+  const [version = '', executable = ''] = (answer ?? '').split(/\r?\n/);
+  const [major, minor] = version.trim().split('.').map(Number);
+  if (major !== 3 || !(minor >= 8)) return null;
+  if (!IS_WINDOWS) return command;
+  const real = executable.trim();
+  return real && existsSync(real) ? real : command;
+}
+
+/** Every python.exe under `dir`\\Python3*, newest version first. */
+function windowsInstalls(dir) {
+  if (!dir) return [];
+  let names = [];
+  try {
+    names = readdirSync(dir).filter((name) => /^Python3\d+/i.test(name));
+  } catch {
+    return [];
+  }
+  const minor = (name) => Number(/^Python3(\d+)/i.exec(name)?.[1] ?? 0);
+  return names
+    .sort((a, b) => minor(b) - minor(a))
+    .map((name) => join(dir, name, 'python.exe'));
 }
 
 function pythonCandidates(env) {
-  if (process.platform === 'win32') return ['python3', 'python', 'py'];
+  if (IS_WINDOWS) {
+    // `py` is the launcher python.org's installer puts on every PC, whether or
+    // not "Add python.exe to PATH" was ticked; then whatever is on PATH; then
+    // the places python.org's installer uses, for a PATH that has neither.
+    return [
+      'py',
+      'python',
+      'python3',
+      ...windowsInstalls(
+        env.LOCALAPPDATA && join(env.LOCALAPPDATA, 'Programs', 'Python')
+      ),
+      ...windowsInstalls(env.ProgramFiles),
+      ...windowsInstalls(env['ProgramFiles(x86)']),
+    ].filter((path, i, all) => all.indexOf(path) === i);
+  }
   if (process.platform !== 'darwin') return ['python3', 'python'];
   // Not /usr/bin/python3: on a Mac without the command-line tools that is a
   // stub which answers by opening an "install developer tools?" dialog.
@@ -122,17 +177,23 @@ let foundPython = null;
 
 async function resolvePython(explicit, env) {
   if (explicit) {
-    if (await isPython3(explicit)) return explicit;
+    if (await probePython(explicit)) return explicit;
     throw new EngineUnavailableError(
       `The Python path set for this plugin, "${explicit}", is not a working Python 3.8 or newer.`
     );
   }
   if (foundPython) return foundPython;
   for (const candidate of pythonCandidates(env)) {
-    if (await isPython3(candidate)) return (foundPython = candidate);
+    const python = await probePython(candidate);
+    if (python) return (foundPython = python);
   }
   throw new EngineUnavailableError(
-    process.platform === 'darwin'
+    IS_WINDOWS
+      ? 'The AD600 scan engine needs Python 3.8 or newer, and none was found ' +
+          'on this PC. Install it from python.org (tick "Add python.exe to ' +
+          'PATH" in the installer), then restart SoundBase, or set ' +
+          '"Python 3 path" in this plugin\'s settings.'
+      : process.platform === 'darwin'
       ? 'The AD600 scan engine needs Python 3, and none was found on this Mac. ' +
           'Run `xcode-select --install` in Terminal (or install Python from python.org), ' +
           'or set "Python 3 path" in this plugin\'s settings.'
@@ -189,10 +250,23 @@ const claimSourcePort = () => {
   return port;
 };
 
-const children = new Set();
+/** each running engine, with its command file */
+const children = new Map();
 // a plugin that is exiting cannot wait, but it can still ask
 process.once('exit', () => {
-  for (const child of children) {
+  for (const [child, commandFile] of children) {
+    if (IS_WINDOWS) {
+      // kill() would be TerminateProcess, which is exactly the unclean exit
+      // this is trying to avoid. Ask instead: the engine reads `quit`, and its
+      // launcher also leaves cleanly once our end of its stdin closes, which
+      // happens as this process goes.
+      try {
+        appendFileSync(commandFile, 'quit\n');
+      } catch {
+        // already gone
+      }
+      continue;
+    }
     try {
       child.kill('SIGTERM');
     } catch {
@@ -284,10 +358,22 @@ export class EngineRun {
     const child = spawn(
       this.engine.command,
       [...this.engine.args, seconds, this.commandFile, logFile],
-      { cwd: ENGINE_DIR, env, stdio: ['pipe', 'pipe', 'pipe'] }
+      {
+        cwd: ENGINE_DIR,
+        env,
+        stdio: ['pipe', 'pipe', 'pipe'],
+        // python.exe is a console program: without this, a console window
+        // opens for each session when SoundBase starts the plugin
+        windowsHide: true,
+        // Windows: Node puts every child it starts in a job object that is
+        // killed outright the moment this process exits. Detached, the engine
+        // is outside it, so if the plugin dies the engine still gets to see
+        // its stdin close and leave the AD600's session cleanly.
+        detached: IS_WINDOWS,
+      }
     );
     this.child = child;
-    children.add(child);
+    children.set(child, this.commandFile);
     // held open, never written: the engine's launcher exits when it closes
     child.stdin?.on('error', () => {});
 
@@ -343,6 +429,18 @@ export class EngineRun {
       // the scratch directory is gone, so the process is too
     }
     if (await gone(QUIT_GRACE_MS)) return;
+    if (IS_WINDOWS) {
+      // what SIGINT is elsewhere: the launcher exits cleanly when stdin closes
+      try {
+        child.stdin?.end();
+      } catch {
+        // already closed
+      }
+      if (await gone(STDIN_CLOSE_GRACE_MS)) return;
+      child.kill();
+      await this.exited;
+      return;
+    }
     child.kill('SIGINT');
     if (await gone(SIGINT_GRACE_MS)) return;
     child.kill('SIGTERM');

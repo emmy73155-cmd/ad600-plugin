@@ -87,6 +87,9 @@ early instead of by timeout.
 
 `quit` in the command file, `SIGINT` and `SIGTERM` all do the same thing:
 release the scan slot, leave the session, exit 0. The driver tries them in
-that order, a few seconds apart, and only then kills the process. The bundled
+that order, a few seconds apart, and only then kills the process. On
+Windows, where Node cannot send either signal, the second step is closing the
+engine's stdin instead, which the bundled launcher turns into the same clean
+exit. The bundled
 engine also does this by itself when its stdin closes, which is what happens
 when the plugin that started it dies.

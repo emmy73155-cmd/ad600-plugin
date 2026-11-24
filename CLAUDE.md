@@ -45,8 +45,9 @@ are not obvious from the code and are expensive to get wrong.
   Do not add a retry loop there, and do not turn that wait into `onFatal` — a
   host that reopens a failed device would become the retry loop.
 - **A session must be closed, not dropped.** Stopping goes `quit` → SIGINT →
-  SIGTERM → SIGKILL, and the engine exits by itself when the plugin dies. A
-  dropped session leaves the device unusable until it is power-cycled.
+  SIGTERM → SIGKILL (on Windows, `quit` → stdin closed → kill), and the
+  engine exits by itself when the plugin dies. A dropped session leaves the
+  device unusable until it is power-cycled.
 - **Resolution has one knob.** RBW, step and point count all map onto the
   device's compression setting in `driver/scan-plan.js`. A change to range or
   resolution is a new session, so `applyConfig` returns at once and the scan

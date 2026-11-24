@@ -15,10 +15,16 @@ curve per antenna, with no Wireless Workbench in between.
 
 ## Before you start
 
-- **macOS, with Python 3.8 or newer.** The scan engine is Python. The plugin
-  finds a Homebrew, python.org or Xcode command-line-tools Python by itself
-  (`xcode-select --install` provides one); otherwise set **Python 3 path** in
+- **macOS or Windows 10/11 (64-bit), with Python 3.8 or newer.** The scan
+  engine is Python. On a Mac the plugin finds a Homebrew, python.org or Xcode
+  command-line-tools Python by itself (`xcode-select --install` provides
+  one). On Windows it finds python.org's Python through the `py` launcher,
+  `PATH` or python.org's install folders. Otherwise set **Python 3 path** in
   the plugin's settings.
+- **On Windows, Python allowed through Windows Defender Firewall on private
+  networks**, and the network the AD600 is on set to **Private**. The engine
+  receives the scan on UDP port 64198 and advertises on 8427; a blocked
+  Python never sees the scan.
 - **The AD600 on the same subnet as this computer**, on a show network or
   cabled straight to it. Discovery and the scan both rely on traffic that does
   not cross a router.
@@ -87,7 +93,8 @@ In rough order of how much each matters:
    what the device sends for the rest, then moving the two limits in
    `driver/scan-plan.js`.
 
-`SB_AD600_ENGINE_LOG=/tmp/ad600.log npm start` keeps the engine's full log.
+`SB_AD600_ENGINE_LOG=/tmp/ad600.log npm start` keeps the engine's full log
+(PowerShell: `$env:SB_AD600_ENGINE_LOG="$env:TEMP\ad600.log"; npm start`).
 It grows by a line per scan packet.
 
 ## Developing
@@ -140,9 +147,10 @@ The guide set the plugin template ships is in [docs/](docs/README.md), and
 
 ## Known limits
 
-- **macOS only.** The engine's own repository ships a Windows launcher, but
-  nobody has run this plugin there, so `win32-x64` is left out of the
-  manifest's `platforms` until someone has.
+- **Windows has not yet scanned a real AD600.** On a Windows PC the
+  plugin installs, finds Python, and the bundled engine boots and joins a
+  loopback stand-in (the real-engine test); a scan of real hardware from
+  Windows is still to be done. See [Windows](#windows) for what differs.
 - **Python is a prerequisite, not bundled.** A frozen runtime under `runtime/`
   is the way to remove that, and is not built yet.
 - **One controller.** This plugin and Wireless Workbench cannot scan the same
@@ -166,3 +174,33 @@ before publishing this plugin.
 This plugin is not affiliated with, authorized or endorsed by Shure
 Incorporated. "Shure", "AD600", "Axient" and "Wireless Workbench" are
 trademarks of their owner, used here only to say what the plugin works with.
+
+## Windows
+
+What Windows needs that macOS does not, all of it in the driver and the
+launcher — the two vendored engine files are untouched:
+
+- **Finding Python** (`driver/engine-process.js`): tries `py`, `python`,
+  `python3`, then `%LOCALAPPDATA%\Programs\Python\Python3*` and
+  `%ProgramFiles%\Python3*`, newest first. It then runs the real
+  `python.exe` the candidate reports (`sys.executable`), not the `py` or
+  Microsoft Store launcher in front of it, so nothing stands between the
+  plugin and the engine when it has to be stopped.
+- **Stopping cleanly**: Node cannot send SIGINT or SIGTERM on Windows — its
+  `kill()` is TerminateProcess, which would drop the AD600 session instead
+  of closing it. So on Windows the driver asks with `quit` in the command
+  file, then closes the engine's stdin, and only then kills.
+  `driver/engine/run_console.py` turns a closed stdin into the console's own
+  SIGTERM handler with `signal.raise_signal` (on Windows `os.kill` is
+  TerminateProcess too) and also writes `quit` to the command file.
+- **Surviving the plugin's death**: Node puts the children it starts in a job
+  object that Windows kills when the plugin exits. The engine is started
+  `detached` on Windows to stay out of it, so it still leaves cleanly. On
+  exit the plugin writes `quit` rather than killing it.
+- **No console windows**: every Python process is started with
+  `windowsHide`.
+- **Packing**: `npm run pack:release` uses Windows' own `tar.exe` for the zip,
+  since Windows has no `zip`/`unzip`.
+
+macOS behaviour is unchanged: every Windows path is behind
+`process.platform === 'win32'` or `os.name == "nt"`.

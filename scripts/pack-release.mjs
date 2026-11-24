@@ -285,12 +285,24 @@ rmSync(join(packDir, 'scripts'), { recursive: true });
 const zipPath = join(outDir, `${id}-${version}.zip`);
 mkdirSync(outDir, { recursive: true });
 rmSync(zipPath, { force: true });
-run('zip', ['-qr', zipPath, packName], { cwd: tmp });
+// Windows has no zip/unzip, but has had bsdtar (tar.exe), which writes and
+// reads zip archives, since Windows 10 1803.
+if (process.platform === 'win32') {
+  run('tar', ['-a', '-c', '-f', zipPath, packName], { cwd: tmp });
+} else {
+  run('zip', ['-qr', zipPath, packName], { cwd: tmp });
+}
 rmSync(tmp, { recursive: true, force: true });
 
 // -- check it against the Lab's rules ----------------------------------------
 
-const entries = capture('unzip', ['-Z1', zipPath]).split('\n');
+const entries = (
+  process.platform === 'win32'
+    ? capture('tar', ['-t', '-f', zipPath])
+    : capture('unzip', ['-Z1', zipPath])
+)
+  .split(/\r?\n/)
+  .map((e) => e.replace(/\\/g, '/'));
 const prefix = `${packName}/`;
 const stray = entries.find((e) => !e.startsWith(prefix) || e.includes('..'));
 if (stray) fail(`unexpected zip entry: ${stray}`);
@@ -303,7 +315,15 @@ for (const f of [
   if (!entries.includes(prefix + f)) fail(`the zip has no ${f} at its root`);
 }
 const zipped = JSON.parse(
-  capture('unzip', ['-p', zipPath, `${prefix}soundbase-plugin.json`])
+  process.platform === 'win32'
+    ? capture('tar', [
+        '-x',
+        '-O',
+        '-f',
+        zipPath,
+        `${prefix}soundbase-plugin.json`,
+      ])
+    : capture('unzip', ['-p', zipPath, `${prefix}soundbase-plugin.json`])
 );
 if (zipped.id !== id || zipped.version !== version) {
   fail(

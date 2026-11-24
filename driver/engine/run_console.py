@@ -13,6 +13,14 @@ the plugin keeps our stdin open for as long as it lives, and when that pipe
 closes we raise SIGTERM against ourselves — which the console already handles
 by releasing the scan slot and leaving the session before it exits.
 
+On Windows, os.kill(pid, SIGTERM) is TerminateProcess: the process would die
+on the spot and the session would be dropped, not closed. There the signal is
+raised in-process instead (signal.raise_signal), which runs the console's own
+handler exactly as a delivered SIGTERM does elsewhere, and a `quit` line goes
+into the command file as well, for good measure. The plugin starts us
+detached on Windows, so this still runs when the plugin itself has been
+killed.
+
     python3 run_console.py <run_for_secs> <cmd_file> <log_file>
 
 Stdlib only.
@@ -23,6 +31,17 @@ import sys
 import threading
 
 
+def _ask_to_quit():
+    # argv: <run_for_secs> <cmd_file> <log_file>
+    if len(sys.argv) < 3:
+        return
+    try:
+        with open(sys.argv[2], "a") as f:
+            f.write("quit\n")
+    except Exception:
+        pass
+
+
 def _exit_with_parent():
     # the raw descriptor, not sys.stdin: a thread parked inside the buffered
     # reader holds its lock, and the interpreter aborts on the way out
@@ -31,6 +50,15 @@ def _exit_with_parent():
             pass
     except Exception:
         pass
+    if os.name == "nt":
+        _ask_to_quit()
+        try:
+            signal.raise_signal(signal.SIGTERM)
+            return
+        except Exception:
+            pass
+        # no in-process signal: the `quit` line above is what remains
+        return
     try:
         os.kill(os.getpid(), signal.SIGTERM)
     except Exception:
